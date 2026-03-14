@@ -12,6 +12,8 @@ import Runtime "mo:core/Runtime";
 import Principal "mo:core/Principal";
 import MixinAuthorization "authorization/MixinAuthorization";
 import AccessControl "authorization/access-control";
+import Stripe "stripe/stripe";
+import OutCall "http-outcalls/outcall";
 
 actor {
   // Types
@@ -45,6 +47,16 @@ actor {
     totalEarnings : Float;
   };
 
+  public type PaymentRecord = {
+    id : Nat;
+    sessionId : Text;
+    amountCents : Nat;
+    currency : Text;
+    description : Text;
+    status : Text;
+    timestamp : Time.Time;
+  };
+
   public type UserProfile = {
     name : Text;
   };
@@ -57,14 +69,115 @@ actor {
 
   // State
   var nextOfferId = 1;
+  var nextPaymentId = 1;
   let offers = Map.empty<Nat, Offer>();
   let clicks = Map.empty<Nat, Nat>();
   let earnings = Map.empty<Nat, List.List<EarningsLog>>();
   let userProfiles = Map.empty<Principal, UserProfile>();
+  let payments = Map.empty<Nat, PaymentRecord>();
+
+  // Stripe config
+  var stripeSecretKey : Text = "";
 
   // Authorization
   let accessControlState = AccessControl.initState();
   include MixinAuthorization(accessControlState);
+
+  // Transform for HTTP outcalls
+  public query func transform(input : OutCall.TransformationInput) : async OutCall.TransformationOutput {
+    OutCall.transform(input);
+  };
+
+  // Admin: Set Stripe secret key
+  public shared ({ caller }) func setStripeSecretKey(key : Text) : async () {
+    if (not (AccessControl.isAdmin(accessControlState, caller))) {
+      Runtime.trap("Unauthorized");
+    };
+    stripeSecretKey := key;
+  };
+
+  // Public: Create Stripe checkout session for a support payment
+  public shared ({ caller }) func createPaymentSession(amountCents : Nat, currency : Text, description : Text, successUrl : Text, cancelUrl : Text) : async Text {
+    if (stripeSecretKey == "") {
+      Runtime.trap("Stripe not configured");
+    };
+    let config : Stripe.StripeConfiguration = {
+      secretKey = stripeSecretKey;
+      allowedCountries = [];
+    };
+    let item : Stripe.ShoppingItem = {
+      currency;
+      productName = description;
+      productDescription = description;
+      priceInCents = amountCents;
+      quantity = 1;
+    };
+    let sessionJson = await Stripe.createCheckoutSession(config, caller, [item], successUrl, cancelUrl, transform);
+    // Extract session URL from JSON response
+    let urlPattern = "\"url\":\"";
+    if (sessionJson.contains(#text urlPattern)) {
+      let parts = sessionJson.split(#text urlPattern);
+      switch (parts.next()) {
+        case (null) { Runtime.trap("Failed to parse session") };
+        case (?_) {
+          switch (parts.next()) {
+            case (?afterPattern) {
+              switch (afterPattern.split(#text "\"").next()) {
+                case (?url) {
+                  // Record pending payment
+                  let sessionId = extractSessionId(sessionJson);
+                  let record : PaymentRecord = {
+                    id = nextPaymentId;
+                    sessionId;
+                    amountCents;
+                    currency;
+                    description;
+                    status = "pending";
+                    timestamp = Time.now();
+                  };
+                  payments.add(nextPaymentId, record);
+                  nextPaymentId += 1;
+                  return url;
+                };
+                case (null) { Runtime.trap("Failed to parse URL") };
+              };
+            };
+            case (null) { Runtime.trap("Failed to parse session response") };
+          };
+        };
+      };
+    };
+    Runtime.trap("Stripe error: " # sessionJson);
+  };
+
+  func extractSessionId(json : Text) : Text {
+    let pattern = "\"id\":\"cs_";
+    if (json.contains(#text pattern)) {
+      let parts = json.split(#text pattern);
+      switch (parts.next()) {
+        case (null) { "" };
+        case (?_) {
+          switch (parts.next()) {
+            case (?after) {
+              switch (after.split(#text "\"").next()) {
+                case (?id) { "cs_" # id };
+                case (null) { "" };
+              };
+            };
+            case (null) { "" };
+          };
+        };
+      };
+    } else { "" };
+  };
+
+  // Admin: List all payments
+  public shared query ({ caller }) func listPayments() : async [PaymentRecord] {
+    if (not (AccessControl.isAdmin(accessControlState, caller))) {
+      Runtime.trap("Unauthorized");
+    };
+    payments.values().toArray();
+  };
 
   // Admin-only: Offer Management
   public shared ({ caller }) func createOffer(
@@ -135,24 +248,19 @@ actor {
     earnings.remove(id);
   };
 
-  // Public: List active offers (no auth required)
   public query ({ caller }) func listActiveOffers() : async [Offer] {
     offers.values().toArray().filter(
       func(offer) { offer.active }
     );
   };
 
-  // Public: Get offer by ID (no auth required)
   public query ({ caller }) func getOfferById(id : Nat) : async ?Offer {
     offers.get(id);
   };
 
-  // Public: Record click (no auth required - anyone can trigger)
   public shared ({ caller }) func recordClick(offerId : Nat) : async () {
     switch (offers.get(offerId)) {
-      case (null) {
-        Runtime.trap("Offer does not exist");
-      };
+      case (null) { Runtime.trap("Offer does not exist") };
       case (?_) {
         let currentClicks = switch (clicks.get(offerId)) {
           case (null) { 0 };
@@ -163,22 +271,14 @@ actor {
     };
   };
 
-  // Admin-only: Log earnings
   public shared ({ caller }) func logEarning(offerId : Nat, amount : Float, date : Text, note : Text) : async () {
     if (not (AccessControl.isAdmin(accessControlState, caller))) {
       Runtime.trap("Unauthorized: Only admins can log earnings");
     };
     switch (offers.get(offerId)) {
-      case (null) {
-        Runtime.trap("Offer does not exist");
-      };
+      case (null) { Runtime.trap("Offer does not exist") };
       case (?_) {
-        let log : EarningsLog = {
-          offerId;
-          amount;
-          date;
-          note;
-        };
+        let log : EarningsLog = { offerId; amount; date; note };
         let existing = switch (earnings.get(offerId)) {
           case (null) { List.empty<EarningsLog>() };
           case (?list) { list };
@@ -189,87 +289,55 @@ actor {
     };
   };
 
-  // Public: Get stats for a specific offer (no auth required)
   public query ({ caller }) func getOfferStats(offerId : Nat) : async OfferStats {
     switch (offers.get(offerId)) {
       case (null) { Runtime.trap("Offer does not exist.") };
       case (?offer) {
-        let clickCount = switch (clicks.get(offerId)) {
-          case (null) { 0 };
-          case (?count) { count };
-        };
-        let totalEarnings = switch (earnings.get(offerId)) {
-          case (null) { 0.0 };
-          case (?logs) {
-            logs.foldLeft(
-              0.0,
-              func(acc, log) { acc + log.amount },
-            );
-          };
-        };
         {
           offer;
-          clickCount;
-          totalEarnings;
+          clickCount = switch (clicks.get(offerId)) { case (null) { 0 }; case (?c) { c } };
+          totalEarnings = switch (earnings.get(offerId)) {
+            case (null) { 0.0 };
+            case (?logs) { logs.foldLeft(0.0, func(acc, log) { acc + log.amount }) };
+          };
         };
       };
     };
   };
 
-  // Public: Get all offer stats (no auth required)
   public query ({ caller }) func getAllOfferStats() : async [OfferStats] {
     offers.toArray().map(func((_, offer)) { getOfferStatsInternal(offer.id) }).sort();
   };
 
   func getOfferStatsInternal(offerId : Nat) : OfferStats {
     switch (offers.get(offerId)) {
-      case (null) {
-        Runtime.trap("Offer does not exist");
-      };
+      case (null) { Runtime.trap("Offer does not exist") };
       case (?offer) {
-        let clickCount = switch (clicks.get(offerId)) {
-          case (null) { 0 };
-          case (?count) { count };
-        };
-        let totalEarnings = switch (earnings.get(offerId)) {
-          case (null) { 0.0 };
-          case (?logs) {
-            logs.foldLeft(
-              0.0,
-              func(acc, log) { acc + log.amount },
-            );
-          };
-        };
         {
           offer;
-          clickCount;
-          totalEarnings;
+          clickCount = switch (clicks.get(offerId)) { case (null) { 0 }; case (?c) { c } };
+          totalEarnings = switch (earnings.get(offerId)) {
+            case (null) { 0.0 };
+            case (?logs) { logs.foldLeft(0.0, func(acc, log) { acc + log.amount }) };
+          };
         };
       };
     };
   };
 
-  // Public: Get click count for an offer (no auth required)
   public query ({ caller }) func getClickCount(offerId : Nat) : async Nat {
     switch (offers.get(offerId)) {
-      case (null) {
-        Runtime.trap("Offer does not exist");
-      };
+      case (null) { Runtime.trap("Offer does not exist") };
       case (?_) {
-        switch (clicks.get(offerId)) {
-          case (null) { 0 };
-          case (?count) { count };
-        };
+        switch (clicks.get(offerId)) { case (null) { 0 }; case (?c) { c } };
       };
     };
   };
 
-  // Public: Get total clicks across all offers (no auth required)
   public query ({ caller }) func getTotalClicks() : async Nat {
     clicks.values().toArray().foldLeft(0, Nat.add);
   };
 
-  // Public: Get total earnings across all offers (no auth required)
   public query ({ caller }) func getTotalEarnings() : async Float {
     earnings.values().toArray().foldLeft(
       0.0,
@@ -278,6 +346,4 @@ actor {
       },
     );
   };
-
-  // Authorization checks & profile functions are now part of MixinAuthorization
 };

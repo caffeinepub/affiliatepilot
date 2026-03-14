@@ -174,3 +174,59 @@ export function useLogEarning() {
     },
   });
 }
+
+export interface PaymentRecord {
+  id: bigint;
+  sessionId: string;
+  amountCents: bigint;
+  currency: string;
+  description: string;
+  status: string;
+  timestamp: bigint;
+}
+
+export function useListPayments() {
+  const { actor, isFetching } = useActor();
+  return useQuery<PaymentRecord[]>({
+    queryKey: ["payments"],
+    queryFn: async () => {
+      if (!actor) return [];
+      return (actor as any).listPayments() as Promise<PaymentRecord[]>;
+    },
+    enabled: !!actor && !isFetching,
+  });
+}
+
+export function useCreatePaymentSession() {
+  const { actor } = useActor();
+  return useMutation({
+    mutationFn: async (data: {
+      amountCents: bigint;
+      currency: string;
+      description: string;
+      successUrl: string;
+      cancelUrl: string;
+    }) => {
+      if (!actor) throw new Error("Not authenticated");
+      const url = (await (actor as any).createPaymentSession(
+        data.amountCents,
+        data.currency,
+        data.description,
+        data.successUrl,
+        data.cancelUrl,
+      )) as string;
+      window.open(url, "_blank", "noopener,noreferrer");
+      return url;
+    },
+  });
+}
+
+export function useSetStripeSecretKey() {
+  const { actor } = useActor();
+  return useMutation({
+    mutationFn: async (key: string) => {
+      if (!actor) throw new Error("Not authenticated");
+      await (actor as any).setStripeSecretKey(key);
+    },
+  });
+}

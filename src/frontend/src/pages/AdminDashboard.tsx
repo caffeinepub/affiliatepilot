@@ -11,6 +11,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -24,7 +26,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   BarChart3,
   CheckCircle,
+  CreditCard,
   DollarSign,
+  KeyRound,
+  Loader2,
   MousePointerClick,
   Pencil,
   Plus,
@@ -43,7 +48,9 @@ import {
   useAllOfferStats,
   useCreateOffer,
   useDeleteOffer,
+  useListPayments,
   useLogEarning,
+  useSetStripeSecretKey,
   useTotalClicks,
   useTotalEarnings,
   useUpdateOffer,
@@ -93,6 +100,204 @@ const SKELETON_ROWS_4 = ["s1", "s2", "s3", "s4"];
 const SKELETON_COLS_8 = ["c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8"];
 const SKELETON_COLS_4 = ["c1", "c2", "c3", "c4"];
 const SKELETON_COLS_5 = ["c1", "c2", "c3", "c4", "c5"];
+
+function PaymentsTab() {
+  const { data: payments, isLoading: paymentsLoading } = useListPayments();
+  const setStripeKey = useSetStripeSecretKey();
+  const [stripeKey, setStripeKeyValue] = useState("");
+
+  const handleSaveKey = async () => {
+    if (!stripeKey.trim()) {
+      toast.error("Please enter your Stripe secret key");
+      return;
+    }
+    try {
+      await setStripeKey.mutateAsync(stripeKey.trim());
+      toast.success("Stripe secret key saved!");
+      setStripeKeyValue("");
+    } catch (e) {
+      toast.error(
+        `Failed: ${e instanceof Error ? e.message : "Unknown error"}`,
+      );
+    }
+  };
+
+  const formatAmount = (cents: bigint, currency: string) => {
+    const amount = Number(cents) / 100;
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: currency.toUpperCase(),
+    }).format(amount);
+  };
+
+  const formatDate = (timestamp: bigint) => {
+    // Motoko timestamps are in nanoseconds
+    const ms = Number(timestamp) / 1_000_000;
+    return new Date(ms).toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
+  };
+
+  const statusColor = (status: string) => {
+    switch (status.toLowerCase()) {
+      case "complete":
+      case "paid":
+        return "bg-primary/15 text-primary border-primary/30";
+      case "pending":
+        return "bg-yellow-500/15 text-yellow-400 border-yellow-500/30";
+      case "failed":
+      case "expired":
+        return "bg-destructive/15 text-destructive border-destructive/30";
+      default:
+        return "bg-secondary text-secondary-foreground";
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Stripe Key Settings */}
+      <div className="card-glass rounded-xl p-6 border border-primary/10">
+        <div className="flex items-center gap-2 mb-4">
+          <KeyRound className="h-5 w-5 text-primary" />
+          <h3 className="font-display text-lg font-semibold">
+            Stripe Configuration
+          </h3>
+        </div>
+        <p className="text-sm text-muted-foreground mb-4">
+          Enter your Stripe Secret Key (starts with{" "}
+          <code className="bg-secondary px-1 rounded text-xs">sk_live_</code> or{" "}
+          <code className="bg-secondary px-1 rounded text-xs">sk_test_</code>)
+          to enable payment processing.
+        </p>
+        <div className="flex gap-3 max-w-lg">
+          <div className="flex-1 space-y-1.5">
+            <Label
+              htmlFor="stripe-key"
+              className="text-xs text-muted-foreground"
+            >
+              Secret Key
+            </Label>
+            <Input
+              id="stripe-key"
+              type="password"
+              placeholder="sk_live_..."
+              value={stripeKey}
+              onChange={(e) => setStripeKeyValue(e.target.value)}
+              className="bg-secondary border-border font-mono text-sm"
+              data-ocid="admin.stripe_key.input"
+            />
+          </div>
+          <div className="flex items-end">
+            <Button
+              className="bg-primary text-primary-foreground hover:bg-primary/90 gap-1.5"
+              onClick={handleSaveKey}
+              disabled={setStripeKey.isPending || !stripeKey.trim()}
+              data-ocid="admin.stripe_key.save_button"
+            >
+              {setStripeKey.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <KeyRound className="h-4 w-4" />
+              )}
+              Save Key
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {/* Payments Table */}
+      <div>
+        <div className="flex items-center gap-2 mb-4">
+          <CreditCard className="h-5 w-5 text-accent" />
+          <h3 className="font-display text-lg font-semibold">
+            Payment History
+          </h3>
+          {!paymentsLoading && payments && (
+            <span className="text-xs text-muted-foreground ml-auto">
+              {payments.length} transaction{payments.length !== 1 ? "s" : ""}
+            </span>
+          )}
+        </div>
+
+        <div
+          className="card-glass rounded-xl overflow-hidden"
+          data-ocid="admin.payments.table"
+        >
+          <Table>
+            <TableHeader>
+              <TableRow className="border-border hover:bg-transparent">
+                <TableHead>Date</TableHead>
+                <TableHead>Description</TableHead>
+                <TableHead className="text-right">Amount</TableHead>
+                <TableHead>Currency</TableHead>
+                <TableHead>Status</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {paymentsLoading ? (
+                SKELETON_ROWS_4.map((rowId) => (
+                  <TableRow key={rowId} className="border-border">
+                    {SKELETON_COLS_5.map((colId) => (
+                      <TableCell key={colId}>
+                        <Skeleton className="h-4 w-full" />
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))
+              ) : payments && payments.length > 0 ? (
+                payments.map((p, i) => (
+                  <TableRow
+                    key={p.id.toString()}
+                    className="border-border hover:bg-secondary/30"
+                    data-ocid={`admin.payments.row.${i + 1}`}
+                  >
+                    <TableCell className="text-sm text-muted-foreground">
+                      {formatDate(p.timestamp)}
+                    </TableCell>
+                    <TableCell className="font-medium">
+                      {p.description}
+                    </TableCell>
+                    <TableCell className="text-right font-mono font-semibold text-primary">
+                      {formatAmount(p.amountCents, p.currency)}
+                    </TableCell>
+                    <TableCell>
+                      <span className="uppercase text-xs font-mono text-muted-foreground">
+                        {p.currency}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <Badge
+                        className={`text-xs capitalize ${statusColor(p.status)}`}
+                      >
+                        {p.status}
+                      </Badge>
+                    </TableCell>
+                  </TableRow>
+                ))
+              ) : (
+                <TableRow>
+                  <TableCell
+                    colSpan={5}
+                    className="text-center py-12 text-muted-foreground"
+                    data-ocid="admin.payments.empty_state"
+                  >
+                    <CreditCard className="h-8 w-8 mx-auto mb-2 opacity-20" />
+                    <p>No payments received yet.</p>
+                    <p className="text-xs mt-1">
+                      Payments will appear here once visitors support your site.
+                    </p>
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function AdminDashboard() {
   const { data: stats, isLoading: statsLoading } = useAllOfferStats();
@@ -228,6 +433,9 @@ export default function AdminDashboard() {
           </TabsTrigger>
           <TabsTrigger value="earnings" data-ocid="admin.earnings.tab">
             Earnings
+          </TabsTrigger>
+          <TabsTrigger value="payments" data-ocid="admin.payments.tab">
+            Payments
           </TabsTrigger>
         </TabsList>
 
@@ -586,6 +794,11 @@ export default function AdminDashboard() {
               </div>
             </div>
           )}
+        </TabsContent>
+
+        {/* Payments Tab */}
+        <TabsContent value="payments">
+          <PaymentsTab />
         </TabsContent>
       </Tabs>
 

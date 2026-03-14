@@ -1,12 +1,26 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { DollarSign, ExternalLink, Star, TrendingUp, Zap } from "lucide-react";
+import {
+  DollarSign,
+  ExternalLink,
+  Heart,
+  Loader2,
+  Star,
+  TrendingUp,
+  Zap,
+} from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
+import { toast } from "sonner";
 import type { Offer } from "../backend";
 import { SAMPLE_OFFERS } from "../data/sampleOffers";
-import { useListActiveOffers, useRecordClick } from "../hooks/useQueries";
+import {
+  useCreatePaymentSession,
+  useListActiveOffers,
+  useRecordClick,
+} from "../hooks/useQueries";
 
 const containerVariants = {
   hidden: {},
@@ -19,6 +33,144 @@ const cardVariants = {
   hidden: { opacity: 0, y: 30 },
   show: { opacity: 1, y: 0, transition: { duration: 0.4 } },
 };
+
+const PRESET_AMOUNTS = [
+  { label: "$5", cents: 500 },
+  { label: "$10", cents: 1000 },
+  { label: "$25", cents: 2500 },
+];
+
+function SupportSection() {
+  const [selectedPreset, setSelectedPreset] = useState<number | null>(null);
+  const [customAmount, setCustomAmount] = useState("");
+  const createSession = useCreatePaymentSession();
+
+  const getAmountCents = (): number | null => {
+    if (selectedPreset !== null) return selectedPreset;
+    const parsed = Number.parseFloat(customAmount);
+    if (!Number.isNaN(parsed) && parsed > 0) return Math.round(parsed * 100);
+    return null;
+  };
+
+  const handleSupport = async () => {
+    const cents = getAmountCents();
+    if (!cents) {
+      toast.error("Please select or enter an amount");
+      return;
+    }
+    try {
+      await createSession.mutateAsync({
+        amountCents: BigInt(cents),
+        currency: "usd",
+        description: "Support AffiliatePilot",
+        successUrl: window.location.href,
+        cancelUrl: window.location.href,
+      });
+      toast.success("Opening payment page…");
+    } catch (e) {
+      toast.error(
+        `Payment failed: ${e instanceof Error ? e.message : "Unknown error"}`,
+      );
+    }
+  };
+
+  return (
+    <section
+      className="container mx-auto px-4 pb-10"
+      data-ocid="storefront.support.section"
+    >
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        whileInView={{ opacity: 1, y: 0 }}
+        viewport={{ once: true }}
+        transition={{ duration: 0.5 }}
+        className="card-glass rounded-2xl p-8 max-w-2xl mx-auto text-center border border-primary/20"
+        style={{ boxShadow: "0 0 40px oklch(var(--primary) / 0.08)" }}
+      >
+        <div className="flex items-center justify-center gap-2 mb-3">
+          <Heart className="h-6 w-6 text-primary fill-primary/30" />
+          <h2 className="font-display text-2xl font-bold">Support This Site</h2>
+        </div>
+        <p className="text-muted-foreground text-sm mb-6">
+          Enjoying the deals? A small tip keeps this platform running and adds
+          new offers every week.
+        </p>
+
+        {/* Preset amounts */}
+        <div className="flex justify-center gap-3 mb-4">
+          {PRESET_AMOUNTS.map((p) => (
+            <button
+              key={p.cents}
+              type="button"
+              onClick={() => {
+                setSelectedPreset(p.cents);
+                setCustomAmount("");
+              }}
+              className={`px-5 py-2 rounded-full text-sm font-semibold border transition-all duration-200 ${
+                selectedPreset === p.cents
+                  ? "bg-primary text-primary-foreground border-primary shadow-glow"
+                  : "bg-secondary text-secondary-foreground border-border hover:border-primary/50"
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Custom amount */}
+        <div className="flex gap-3 max-w-xs mx-auto mb-5">
+          <div className="relative flex-1">
+            <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              type="number"
+              min="1"
+              step="0.01"
+              placeholder="Custom amount"
+              value={customAmount}
+              onChange={(e) => {
+                setCustomAmount(e.target.value);
+                setSelectedPreset(null);
+              }}
+              className="pl-8 bg-secondary border-border focus:border-primary"
+              data-ocid="storefront.support.amount_input"
+            />
+          </div>
+        </div>
+
+        <Button
+          className="w-full max-w-xs bg-primary text-primary-foreground hover:bg-primary/90 glow-green font-semibold gap-2"
+          disabled={createSession.isPending || getAmountCents() === null}
+          onClick={handleSupport}
+          data-ocid="storefront.support.submit_button"
+        >
+          {createSession.isPending ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Processing…
+            </>
+          ) : (
+            <>
+              <Heart className="h-4 w-4" />
+              Support Now
+              {getAmountCents()
+                ? ` — $${(getAmountCents()! / 100).toFixed(2)}`
+                : ""}
+            </>
+          )}
+        </Button>
+
+        {createSession.isPending && (
+          <p
+            className="text-xs text-muted-foreground mt-3"
+            data-ocid="storefront.support.loading_state"
+          >
+            Creating secure payment session…
+          </p>
+        )}
+      </motion.div>
+    </section>
+  );
+}
 
 function OfferCard({
   offer,
@@ -285,6 +437,9 @@ export default function Storefront() {
           )}
         </section>
       )}
+
+      {/* Support / Tip Jar Section */}
+      <SupportSection />
 
       {/* All Offers */}
       <section className="container mx-auto px-4 pb-16">

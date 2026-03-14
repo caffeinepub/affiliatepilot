@@ -1,29 +1,24 @@
 # AffiliatePilot
 
 ## Current State
-New project. No existing code.
+A full-stack affiliate marketing platform with a public storefront showing affiliate offers, click tracking, and an admin dashboard to manage offers and log earnings.
 
 ## Requested Changes (Diff)
 
 ### Add
-- Admin dashboard (login-protected) to manage affiliate offers/links
-- Public storefront page listing affiliate offers with tracked outbound links
-- Click tracking: every click on an affiliate link is recorded with timestamp
-- Earnings tracker: admin manually logs commissions earned per offer
-- Analytics: total clicks, earnings, conversion estimates per offer
-- Offer CRUD: create/edit/delete affiliate offers (title, description, image URL, affiliate link, category, commission rate)
-- Category filtering on the public storefront
-- Featured offers section on the storefront
+- Stripe payment integration so the admin can receive payments from visitors/buyers
+- A "Support / Buy" or "Make a Payment" option on the storefront for visitors to pay the site owner directly
+- Payment history visible in the admin dashboard
 
 ### Modify
-N/A
+- Admin dashboard: add a Payments tab showing received payments
+- Storefront: add a visible way for visitors to send a payment (e.g. a tip jar or support button)
 
 ### Remove
-N/A
+- Nothing removed
 
 ## Implementation Plan
-1. Backend: Offers stable store (id, title, description, imageUrl, affiliateUrl, category, commissionRate, featured, active), Click events store (offerId, timestamp, userAgent), Earnings log store (offerId, amount, date, note)
-2. Backend API: createOffer, updateOffer, deleteOffer, listOffers, recordClick, getClickStats, logEarning, getEarnings, getTotalEarnings
-3. Authorization: admin role gates all write/management operations
-4. Frontend public page: storefront with category filter, offer cards with tracked outbound links
-5. Frontend admin: dashboard with offer management, click analytics, earnings tracker
+1. Select the `stripe` Caffeine component
+2. Regenerate backend to include Stripe payment recording (createPayment, listPayments)
+3. Add a "Support This Site" / tip-jar section to the storefront with a Stripe checkout button
+4. Add a Payments tab to the admin dashboard showing all received payments with amount, date, and payer info
